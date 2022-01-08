@@ -1,0 +1,133 @@
+---
+- name: "Creating an AWS EC2 instance"
+  hosts: localhost
+  vars:
+    key_name: "ansible-key"
+    access_key: "AKIAYKRXFAV5ROZ7O3IF"
+    secret_key: "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"
+    sec1: "ansible-1"
+    sec2: "ansible-2"
+    region: "ap-south-1"
+    user_data: userdata.sh
+
+
+  tasks:
+    - name: "Creating an aws Key-pair"
+      ec2_key:
+        name: "{{ key_name }}"
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        region: "{{ region }}"
+        state: present
+      register: key_content
+
+    - name: "Aws - Saving the private key contents"
+      when: key_content.changed == true
+      copy:
+        content: "{{ key_content.key.private_key }}"
+        dest: "{{ key_name }}.pem"
+        mode: 0400
+
+    -  name: " Creating Security Group {{ sec1 }} in the aws"
+       ec2_group:
+         aws_access_key: "{{ access_key }}"
+         aws_secret_key: "{{ secret_key }}"
+         region: "{{ region }}"
+         name: "{{ sec1 }}"
+         description: "Allows Only 80 Conntenction"
+         rules:
+           - proto: tcp
+             from_port: 80
+             to_port: 80
+             cidr_ip:
+               - 0.0.0.0/0
+             cidr_ipv6:
+               - ::/0
+         tags:
+            Name: "{{ sec1 }}"
+       register: sec1_status
+
+
+    -  name: "Aws - Creating Security Group {{ sec2 }} in the aws"
+       ec2_group:
+         aws_access_key: "{{ access_key }}"
+         aws_secret_key: "{{ secret_key }}"
+         region: "{{ region }}"
+         name: "{{ sec2 }}"
+         description: "Allows Only 22,443 Conntenction"
+         rules:
+           - proto: tcp
+             from_port: 22
+             to_port: 22
+             cidr_ip:
+               - 0.0.0.0/0
+             cidr_ipv6:
+               - ::/0
+
+           - proto: tcp
+             from_port: 443
+             to_port: 443
+             cidr_ip:
+               - 0.0.0.0/0
+             cidr_ipv6:
+               - ::/0
+         tags:
+            Name: "{{ sec2 }}"
+       register: sec2_status
+
+
+
+    - name: "Aws - Creating Ec2 Instance"
+      ec2:
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        user_data: "{{ lookup( 'file', '{{ user_data }}')}}"
+        region: "{{ region }}"
+        key_name: "{{ key_name }}"
+        instance_type: "t2.micro"
+        image: "ami-052cef05d01020f1d"
+        group_id:
+          - "{{ sec1_status.group_id }}"
+          - "{{ sec2_status.group_id }}"
+        instance_tags:
+            Name: "ansible-web"
+            project: "zomato"
+        count_tag:
+          Name: "ansible-web"
+        exact_count: 2
+      register: ec2_details
+        
+    - name: "Creating Dynamic Inventory"
+      add_host:
+        name: "{{ item.public_ip }}"
+        groups: "amazon"
+        ansible_host: "{{ item.public_ip }}"
+        ansible_port: 22
+        ansible_user: "ec2-user"
+        ansible_ssh_private_key_file: "{{ key_name }}.pem"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+      with_items:
+        - "{{ ec2_details.tagged_instances }}"
+- name: "Installing the Apache"
+  become: true
+  hosts: amazon
+  tasks:
+
+    - wait_for_connection:
+        timeout: 500
+
+    - name: "Installing Apache"
+      yum:
+        name: httpd
+        state: present
+        
+    - name: "Creating index.html"
+      copy:
+        content: "<center><h1>{{ ansible_fqdn }} </h1></center>"
+        dest: /var/www/html/index.html
+        
+    - name: "Starting/Enabling Apache"
+      service:
+        name: httpd
+        state: restarted
+        enabled: true
